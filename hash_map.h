@@ -18,5 +18,6 @@ typedef struct hashmap
 HashMap *newHashMap(int capacity);
 void hash_set(HashMap *, char *key, char *val);
 char *hash_get(HashMap *, char *key);
+void freeHashMap(HashMap *this);
 
 #endif

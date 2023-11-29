@@ -1,5 +1,10 @@
 #include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include "proxy.h"
+#include <openssl/evp.h>
 #include "hash_map.h"
 
 /* Recommended max cache and object sizes */
@@ -11,7 +16,7 @@ static const char *user_agent_hdr = "Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) 
 
 int main(int argc, char **argv)
 {
-    printf("%s", user_agent_hdr);
+    // printf("%s", user_agent_hdr);
     int listenfd, connfd;
     char hostname[MAXLINE], port[MAXLINE];
     socklen_t clientlen;
@@ -24,6 +29,14 @@ int main(int argc, char **argv)
         exit(1);
     }
 
+    struct stat st = {0};
+
+    if (stat("cache", &st) == -1)
+    {
+        printf("Creating cache folder\n");
+        mkdir("cache", 0700);
+    }
+    printf("Initiating Proxy, accepting connections on port %s\n", argv[1]);
     listenfd = Open_listenfd(argv[1]);
     while (1)
     {
@@ -31,11 +44,28 @@ int main(int argc, char **argv)
         connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen); // line:netp:tiny:accept
         Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE,
                     port, MAXLINE, 0);
-        printf("Accepted connection from (%s, %s)\n", hostname, port);
+        printf("----------------------------------------\nAccepted connection from (%s, %s)\n", hostname, port);
         doit(connfd); // line:netp:tiny:doit
-        printf("Closing connection from (%s, %s)\n", hostname, port);
+        printf("Closing connection from (%s, %s)\n\n", hostname, port);
         Close(connfd); // line:netp:tiny:close
     }
+}
+
+/*
+ * serve_static - copy a file back to the client
+ */
+/* $begin serve_static */
+void serve_static(int fd, char *filename, int filesize)
+{
+    int srcfd;
+    char *srcp, buf[MAXBUF];
+
+    /* Send response body to client */
+    srcfd = Open(filename, O_RDONLY, 0);                        // line:netp:servestatic:open
+    srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); // line:netp:servestatic:mmap
+    Close(srcfd);                                               // line:netp:servestatic:close
+    Rio_writen(fd, srcp, filesize);                             // line:netp:servestatic:write
+    Munmap(srcp, filesize);                                     // line:netp:servestatic:munmap
 }
 
 void send_headers(int fd, HashMap *headers)
@@ -70,11 +100,30 @@ void relay_data(int fd, int upstream_fd)
     } while (bytes > 0);
 }
 
-void fix_headers(HashMap *headers)
+void fix_headers(HashMap *headers, const char *host)
 {
-    hash_set(headers, "User-Agent", user_agent_hdr);
+    if (hash_get(headers, "User-Agent") == NULL)
+    {
+        hash_set(headers, "User-Agent", user_agent_hdr);
+    }
     hash_set(headers, "Connection", "close");
     hash_set(headers, "Proxy-Connection", "close");
+    if (hash_get(headers, "Host") == NULL)
+    {
+        hash_set(headers, "Host", host);
+    }
+}
+
+void send_request(int fd, char *method, URL url_info)
+{
+    char buf[MAXLINE];
+    sprintf(buf, "%s %s", method, url_info.path);
+    if (url_info.query)
+    {
+        sprintf(buf, "%s?%s", buf, url_info.query);
+    }
+    sprintf(buf, "%s HTTP/1.0\r\n", buf);
+    Rio_writen(fd, buf, strlen(buf));
 }
 /*
  * doit - handle one HTTP request/response transaction
@@ -82,44 +131,52 @@ void fix_headers(HashMap *headers)
 /* $begin doit */
 void doit(int fd)
 {
-    HashMap *headers = newHashMap(32);
-
     int is_static;
     struct stat sbuf;
     char buf[MAXLINE], method[MAXLINE], url[MAXLINE], version[MAXLINE];
     char filename[MAXLINE], cgiargs[MAXLINE];
     rio_t rio;
+    HashMap *headers;
 
     /* Read request line and headers */
     Rio_readinitb(&rio, fd);
     if (!Rio_readlineb(&rio, buf, MAXLINE)) // line:netp:doit:readrequest
         return;
-    printf("%s", buf);
     sscanf(buf, "%s %s %s", method, url, version); // line:netp:doit:parserequest
-    if (strcasecmp(method, "GET"))
+    printf("%s -> %s %s %s\n", buf, method, url, version);
+
+    if (strcasecmp(method, "GET") != 0)
     { // line:netp:doit:beginrequesterr
         clienterror(fd, method, "501", "Not Implemented",
                     "Proxy does not support this method");
         return;
-    }                                // line:netp:doit:endrequesterr
-    read_requesthdrs(&rio, headers); // line:netp:doit:readrequesthdrs
-    fix_headers(headers);
-
+    } // line:netp:doit:endrequesterr
     URL url_info;
+    char md5[33];
+    bytes2md5(url, strlen(url), md5);
+    printf("URL MD5: %s\n", md5);
     parse_url(url, &url_info);
-    if (strcasecmp(url_info.scheme, "http"))
+    if (strcasecmp(url_info.scheme, "http") != 0)
     {
         clienterror(fd, url_info.scheme, "501", "Not Implemented",
                     "Proxy does not support this scheme");
         return;
     }
-    printf("Opening %s:%s\n", url_info.host, url_info.port);
+
+    headers = newHashMap(32);
+
+    read_requesthdrs(&rio, headers); // line:netp:doit:readrequesthdrs
+
+    char hostHeader[MAXLINE];
+    sprintf(hostHeader, "%s:%s", url_info.host, url_info.port);
+    fix_headers(headers, hostHeader);
+
+    printf("\nOpening %s:%s\n", url_info.host, url_info.port);
     int upstream_fd = open_clientfd(url_info.host, url_info.port);
     if (upstream_fd > 0)
     {
         printf("Connected to %s:%s\n", url_info.host, url_info.port);
-        sprintf(buf, "GET %s HTTP/1.0\r\n", url_info.path);
-        Rio_writen(upstream_fd, buf, strlen(buf));
+        send_request(upstream_fd, method, url_info);
         send_headers(upstream_fd, headers);
         relay_data(fd, upstream_fd);
         close(upstream_fd);
@@ -128,10 +185,12 @@ void doit(int fd)
     {
         printf("Failed to connect to %s:%s\n", url_info.host, url_info.port);
     }
+    freeHashMap(headers);
 }
+
 /* $end doit */
 
-void add_header(HashMap *headers, char *header)
+void store_header(HashMap *headers, char *header)
 {
     char *raw_header = strdup(header);
     char *value = strstr(raw_header, ": ");
@@ -159,11 +218,11 @@ void read_requesthdrs(rio_t *rp, HashMap *headers)
     char buf[MAXLINE];
 
     Rio_readlineb(rp, buf, MAXLINE);
-    add_header(headers, buf);
+    store_header(headers, buf);
     while (strcmp(buf, "\r\n"))
     { // line:netp:readhdrs:checkterm
         Rio_readlineb(rp, buf, MAXLINE);
-        add_header(headers, buf);
+        store_header(headers, buf);
     }
     return;
 }
@@ -260,5 +319,24 @@ void clienterror(int fd, char *cause, char *errnum,
     Rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "<hr><em>The Tiny Web server</em>\r\n");
     Rio_writen(fd, buf, strlen(buf));
+    printf("Return %s %s\n%s\n", errnum, shortmsg, longmsg);
 }
 /* $end clienterror */
+
+// https://stackoverflow.com/questions/7627723/how-to-create-a-md5-hash-of-a-string-in-c
+void bytes2md5(const char *data, int len, char *md5buf)
+{
+    // Based on https://www.openssl.org/docs/manmaster/man3/EVP_DigestUpdate.html
+    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+    const EVP_MD *md = EVP_md5();
+    unsigned char md_value[EVP_MAX_MD_SIZE];
+    unsigned int md_len, i;
+    EVP_DigestInit_ex(mdctx, md, NULL);
+    EVP_DigestUpdate(mdctx, data, len);
+    EVP_DigestFinal_ex(mdctx, md_value, &md_len);
+    EVP_MD_CTX_free(mdctx);
+    for (i = 0; i < md_len; i++)
+    {
+        snprintf(&(md5buf[i * 2]), 16 * 2, "%02x", md_value[i]);
+    }
+}
