@@ -58,6 +58,18 @@ void send_headers(int fd, HashMap *headers)
     Rio_writen(fd, buf, strlen(buf));
 }
 
+void relay_data(int fd, int upstream_fd)
+{
+    char buf[MAXLINE];
+    size_t bytes = 0;
+    do
+    {
+        bytes = Rio_readn(upstream_fd, buf, MAXLINE);
+        printf("Read %ld bytes\n", bytes);
+        Rio_writen(fd, buf, bytes);
+    } while (bytes > 0);
+}
+
 void fix_headers(HashMap *headers)
 {
     hash_set(headers, "User-Agent", user_agent_hdr);
@@ -109,6 +121,7 @@ void doit(int fd)
         sprintf(buf, "GET %s HTTP/1.0\r\n", url_info.path);
         Rio_writen(upstream_fd, buf, strlen(buf));
         send_headers(upstream_fd, headers);
+        relay_data(fd, upstream_fd);
         close(upstream_fd);
     }
     else
