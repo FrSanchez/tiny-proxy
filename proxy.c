@@ -88,15 +88,18 @@ void send_headers(int fd, HashMap *headers)
     Rio_writen(fd, buf, strlen(buf));
 }
 
-void relay_data(int fd, int upstream_fd)
+void relay_data(rio_t *out_b, rio_t *in_b)
 {
     char buf[MAXLINE];
     size_t bytes = 0;
     do
     {
-        bytes = Rio_readn(upstream_fd, buf, MAXLINE);
+        bytes = Rio_readnb(in_b, buf, MAXLINE);
         printf("Read %ld bytes\n", bytes);
-        Rio_writen(fd, buf, bytes);
+        if (bytes > 0)
+        {
+            Rio_writen(out_b->rio_fd, buf, bytes);
+        }
     } while (bytes > 0);
 }
 
@@ -175,11 +178,19 @@ void doit(int fd)
     int upstream_fd = open_clientfd(url_info.host, url_info.port);
     if (upstream_fd > 0)
     {
+        rio_t response;
+        HashMap *response_headers = newHashMap(32);
         printf("Connected to %s:%s\n", url_info.host, url_info.port);
         send_request(upstream_fd, method, url_info);
         send_headers(upstream_fd, headers);
-        relay_data(fd, upstream_fd);
-        close(upstream_fd);
+        Rio_readinitb(&response, upstream_fd);
+        Rio_readlineb(&response, buf, MAXLINE);
+        printf("Status: %s\n", buf);
+        Rio_writen(fd, buf, strlen(buf));
+        read_requesthdrs(&response, response_headers);
+        send_headers(fd, response_headers);
+        relay_data(&rio, &response);
+        Close(upstream_fd);
     }
     else
     {
@@ -192,6 +203,10 @@ void doit(int fd)
 
 void store_header(HashMap *headers, char *header)
 {
+    if (strlen(header) == 0)
+    {
+        return;
+    }
     char *raw_header = strdup(header);
     char *value = strstr(raw_header, ": ");
     if (!value)
@@ -205,6 +220,11 @@ void store_header(HashMap *headers, char *header)
     {
         *nl = '\0';
     }
+    if (strlen(raw_header) == 0)
+    {
+        printf("Skip empty header\n");
+        return;
+    }
     hash_set(headers, raw_header, value);
     printf("[%s: %s]\n", raw_header, value);
 }
@@ -217,11 +237,19 @@ void read_requesthdrs(rio_t *rp, HashMap *headers)
 {
     char buf[MAXLINE];
 
-    Rio_readlineb(rp, buf, MAXLINE);
+    int rc = Rio_readlineb(rp, buf, MAXLINE);
+    if (rc == 0)
+    {
+        return;
+    }
     store_header(headers, buf);
     while (strcmp(buf, "\r\n"))
     { // line:netp:readhdrs:checkterm
-        Rio_readlineb(rp, buf, MAXLINE);
+        rc = Rio_readlineb(rp, buf, MAXLINE);
+        if (rc == 0)
+        {
+            return;
+        }
         store_header(headers, buf);
     }
     return;
