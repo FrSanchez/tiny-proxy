@@ -156,9 +156,6 @@ void doit(int fd)
         return;
     } // line:netp:doit:endrequesterr
     URL url_info;
-    char md5[33];
-    bytes2md5(url, strlen(url), md5);
-    printf("URL MD5: %s\n", md5);
     parse_url(url, &url_info);
     if (strcasecmp(url_info.scheme, "http") != 0)
     {
@@ -179,6 +176,8 @@ void doit(int fd)
     int upstream_fd = open_clientfd(url_info.host, url_info.port);
     if (upstream_fd > 0)
     {
+        char status_code[4];
+        char status_text[MAXLINE];
         rio_t response;
         HashMap *response_headers = newHashMap(32);
         printf("Connected to %s:%s\n", url_info.host, url_info.port);
@@ -186,7 +185,8 @@ void doit(int fd)
         send_headers(upstream_fd, headers);
         Rio_readinitb(&response, upstream_fd);
         Rio_readlineb(&response, buf, MAXLINE);
-        printf("Status: %s\n", buf);
+        sscanf(buf, "%s %s %s", version, status_code, status_text);
+        printf("Status: %s %s\n", status_code, status_text);
         Rio_writen(fd, buf, strlen(buf));
         read_requesthdrs(&response, response_headers);
         send_headers(fd, response_headers);
@@ -351,21 +351,3 @@ void clienterror(int fd, char *cause, char *errnum,
     printf("Return %s %s\n%s\n", errnum, shortmsg, longmsg);
 }
 /* $end clienterror */
-
-// https://stackoverflow.com/questions/7627723/how-to-create-a-md5-hash-of-a-string-in-c
-void bytes2md5(const char *data, int len, char *md5buf)
-{
-    // Based on https://www.openssl.org/docs/manmaster/man3/EVP_DigestUpdate.html
-    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-    const EVP_MD *md = EVP_md5();
-    unsigned char md_value[EVP_MAX_MD_SIZE];
-    unsigned int md_len, i;
-    EVP_DigestInit_ex(mdctx, md, NULL);
-    EVP_DigestUpdate(mdctx, data, len);
-    EVP_DigestFinal_ex(mdctx, md_value, &md_len);
-    EVP_MD_CTX_free(mdctx);
-    for (i = 0; i < md_len; i++)
-    {
-        snprintf(&(md5buf[i * 2]), 16 * 2, "%02x", md_value[i]);
-    }
-}
