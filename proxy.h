@@ -23,5 +23,6 @@ void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum,
                  char *shortmsg, char *longmsg);
 int parse_url(char *url, URL *urlInfo);
+void relay_data(int out_b, rio_t *in_b);
 
 #endif

@@ -6,6 +6,7 @@
 #include <errno.h>
 #include "proxy.h"
 #include "hash_map.h"
+#include "hash.h"
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -51,21 +52,51 @@ int main(int argc, char **argv)
     }
 }
 
+void send_file(int fd, char *filename, int filesize)
+{
+    /* Send response body to client */
+    int srcfd = Open(filename, O_RDONLY, 0);                          // line:netp:servestatic:open
+    char *srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); // line:netp:servestatic:mmap
+    Close(srcfd);                                                     // line:netp:servestatic:close
+    Rio_writen(fd, srcp, filesize);                                   // line:netp:servestatic:write
+    Munmap(srcp, filesize);                                           // line:netp:servestatic:munmap
+}
 /*
  * serve_static - copy a file back to the client
  */
 /* $begin serve_static */
 void serve_static(int fd, char *filename, int filesize)
 {
-    int srcfd;
-    char *srcp, buf[MAXBUF];
+    char buf[MAXBUF];
+    char meta[MAXLINE];
+    sprintf(meta, "%s.meta", filename);
 
-    /* Send response body to client */
-    srcfd = Open(filename, O_RDONLY, 0);                        // line:netp:servestatic:open
-    srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); // line:netp:servestatic:mmap
-    Close(srcfd);                                               // line:netp:servestatic:close
-    Rio_writen(fd, srcp, filesize);                             // line:netp:servestatic:write
-    Munmap(srcp, filesize);                                     // line:netp:servestatic:munmap
+    /* Send response headers to client */
+    sprintf(buf, "HTTP/1.0 200 OK\r\n"); // line:netp:servestatic:beginserve
+    Rio_writen(fd, buf, strlen(buf));
+    sprintf(buf, "Server: Tiny Proxy Server\r\n");
+    Rio_writen(fd, buf, strlen(buf));
+    sprintf(buf, "X-Proxied-data: true\r\n");
+    Rio_writen(fd, buf, strlen(buf));
+    sprintf(buf, "Content-length: %d\r\n", filesize);
+    Rio_writen(fd, buf, strlen(buf));
+
+    int meta_fd = Open(meta, O_RDONLY, 0);
+    rio_t rio_meta;
+    Rio_readinitb(&rio_meta, meta_fd);
+    int rc = 0;
+    do
+    {
+        rc = Rio_readlineb(&rio_meta, buf, MAXLINE);
+        if (rc > 0)
+        {
+            Rio_writen(fd, buf, strlen(buf));
+        }
+    } while (rc > 0);
+    Close(meta_fd);
+    sprintf(buf, "\r\n");
+    Rio_writen(fd, buf, strlen(buf));
+    send_file(fd, filename, filesize);
 }
 
 void send_headers(int fd, HashMap *headers)
@@ -88,7 +119,7 @@ void send_headers(int fd, HashMap *headers)
     Rio_writen(fd, buf, strlen(buf));
 }
 
-void relay_data(rio_t *out_b, rio_t *in_b)
+void relay_data(int out_b, rio_t *in_b)
 {
     char buf[MAXLINE];
     size_t bytes = 0;
@@ -98,7 +129,7 @@ void relay_data(rio_t *out_b, rio_t *in_b)
         printf("Read %ld bytes\n", bytes);
         if (bytes > 0)
         {
-            Rio_writen(out_b->rio_fd, buf, bytes);
+            Rio_writen(out_b, buf, bytes);
         }
     } while (bytes > 0);
 }
@@ -128,18 +159,46 @@ void send_request(int fd, char *method, URL url_info)
     sprintf(buf, "%s HTTP/1.0\r\n", buf);
     Rio_writen(fd, buf, strlen(buf));
 }
+
+void write_meta(char *filename, HashMap *headers)
+{
+    char *headersToKeep[] = {"Content-Type", NULL};
+    char buf[MAXLINE];
+    sprintf(buf, "%s.meta", filename);
+    int meta_fd = Open(buf, O_WRONLY | O_CREAT, 0644);
+    rio_t rio_meta;
+    Rio_readinitb(&rio_meta, meta_fd);
+    for (int i = 0; headersToKeep[i] != NULL; i++)
+    {
+        char *key = headersToKeep[i];
+        char *val = hash_get(headers, key);
+        if (val)
+        {
+            sprintf(buf, "%s: %s\r\n", key, val);
+            Rio_writen(meta_fd, buf, strlen(buf));
+        }
+    }
+    Close(meta_fd);
+}
+
+void save_data(char *filename, rio_t *response)
+{
+    int fd = Open(filename, O_WRONLY | O_CREAT, 0644);
+    relay_data(fd, response);
+    Close(fd);
+}
 /*
  * doit - handle one HTTP request/response transaction
  */
 /* $begin doit */
 void doit(int fd)
 {
-    int is_static;
-    struct stat sbuf;
     char buf[MAXLINE], method[MAXLINE], url[MAXLINE], version[MAXLINE];
-    char filename[MAXLINE], cgiargs[MAXLINE];
+    char filename[MAXLINE];
     rio_t rio;
     HashMap *headers;
+    char hash[32];
+    URL url_info;
 
     /* Read request line and headers */
     Rio_readinitb(&rio, fd);
@@ -154,7 +213,8 @@ void doit(int fd)
                     "Proxy does not support this method");
         return;
     } // line:netp:doit:endrequesterr
-    URL url_info;
+    calculate_hash(url, hash);
+    printf("%s -> %s\n", url, hash);
     parse_url(url, &url_info);
     if (strcasecmp(url_info.scheme, "http") != 0)
     {
@@ -171,32 +231,61 @@ void doit(int fd)
     sprintf(hostHeader, "%s:%s", url_info.host, url_info.port);
     fix_headers(headers, hostHeader);
 
-    printf("\nOpening %s:%s\n", url_info.host, url_info.port);
-    int upstream_fd = open_clientfd(url_info.host, url_info.port);
-    if (upstream_fd > 0)
+    sprintf(filename, "cache/%s", hash);
+    printf("Looking for cached file %s\n", filename);
+    struct stat st = {0};
+    if (stat(filename, &st) == -1)
     {
-        char status_code[4];
-        char status_text[MAXLINE];
-        rio_t response;
-        HashMap *response_headers = newHashMap(32);
-        printf("Connected to %s:%s\n", url_info.host, url_info.port);
-        send_request(upstream_fd, method, url_info);
-        send_headers(upstream_fd, headers);
-        Rio_readinitb(&response, upstream_fd);
-        Rio_readlineb(&response, buf, MAXLINE);
-        sscanf(buf, "%s %s %s", version, status_code, status_text);
-        printf("Status: %s %s\n", status_code, status_text);
-        Rio_writen(fd, buf, strlen(buf));
-        read_requesthdrs(&response, response_headers);
-        send_headers(fd, response_headers);
-        relay_data(&rio, &response);
-        Close(upstream_fd);
+        printf("\nOpening %s:%s\n", url_info.host, url_info.port);
+        int upstream_fd = open_clientfd(url_info.host, url_info.port);
+        if (upstream_fd > 0)
+        {
+            char status_code[4];
+            char status_text[MAXLINE];
+            rio_t response;
+            HashMap *response_headers = newHashMap(32);
+            printf("Connected to %s:%s\n", url_info.host, url_info.port);
+            send_request(upstream_fd, method, url_info);
+            send_headers(upstream_fd, headers);
+
+            // read response
+            Rio_readinitb(&response, upstream_fd);
+            Rio_readlineb(&response, buf, MAXLINE);
+            sscanf(buf, "%s %s %s", version, status_code, status_text);
+            printf("Status: %s %s\n", status_code, status_text);
+            read_requesthdrs(&response, response_headers);
+
+            printf("Sending response to client\n");
+            Rio_writen(fd, buf, strlen(buf));
+            send_headers(fd, response_headers);
+            if (strcasecmp(status_code, "200") != 0)
+            {
+                relay_data(fd, &response);
+            }
+            else
+            {
+                printf("Saving data to %s\n", filename);
+                save_data(filename, &response);
+                write_meta(filename, response_headers);
+                stat(filename, &st);
+                sprintf(buf, "\r\n");
+                // Rio_writen(fd, buf, strlen(buf));
+                send_file(fd, filename, st.st_size);
+            }
+            // relay_data(rio.rio_fd, &response);
+            Close(upstream_fd);
+        }
+        else
+        {
+            printf("Failed to connect to %s:%s\n", url_info.host, url_info.port);
+        }
+        freeHashMap(headers);
     }
     else
     {
-        printf("Failed to connect to %s:%s\n", url_info.host, url_info.port);
+        printf("*** Serving cached data**\n");
+        serve_static(fd, filename, st.st_size);
     }
-    freeHashMap(headers);
 }
 
 /* $end doit */
