@@ -3,6 +3,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 #include "proxy.h"
 #include <openssl/evp.h>
 #include "hash_map.h"
@@ -146,7 +147,7 @@ void doit(int fd)
     if (!Rio_readlineb(&rio, buf, MAXLINE)) // line:netp:doit:readrequest
         return;
     sscanf(buf, "%s %s %s", method, url, version); // line:netp:doit:parserequest
-    printf("%s -> %s %s %s\n", buf, method, url, version);
+    printf("[%s] => %s %s %s\n", buf, method, url, version);
 
     if (strcasecmp(method, "GET") != 0)
     { // line:netp:doit:beginrequesterr
