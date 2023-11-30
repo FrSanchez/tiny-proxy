@@ -5,8 +5,8 @@
 # build your proxy from sources.
 
 CC = gcc
-CFLAGS = -g -Wall -I/opt/homebrew/opt/openssl@1.1/include
-LDFLAGS = -lpthread -L/opt/homebrew/opt/openssl@1.1/lib -lssl -lcrypto
+CFLAGS = -g -Wall
+LDFLAGS = -lpthread 
 
 all: proxy
 

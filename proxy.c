@@ -5,7 +5,6 @@
 #include <fcntl.h>
 #include <errno.h>
 #include "proxy.h"
-#include <openssl/evp.h>
 #include "hash_map.h"
 
 /* Recommended max cache and object sizes */
