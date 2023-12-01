@@ -2,20 +2,17 @@ name: C/C++ CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ['main']
   pull_request:
     branches: '*'
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - name: configure
-      run: ./configure
-    - name: make
-      run: make
-    - name: make check
-      run: make
+      - uses: actions/checkout@v3
+      - name: make
+        run: make
+      - name: make check
+        run: make
