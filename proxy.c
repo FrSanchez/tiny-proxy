@@ -268,8 +268,6 @@ void doit(int fd)
                 save_data(filename, &response);
                 write_meta(filename, response_headers);
                 stat(filename, &st);
-                sprintf(buf, "\r\n");
-                // Rio_writen(fd, buf, strlen(buf));
                 send_file(fd, filename, st.st_size);
             }
             // relay_data(rio.rio_fd, &response);

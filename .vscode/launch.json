@@ -8,7 +8,7 @@
             "name": "(lldb) Launch",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/proxy",
+            "program": "${workspaceFolder}/test",
             "args": ["8080"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "build",
