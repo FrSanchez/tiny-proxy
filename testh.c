@@ -29,7 +29,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < sz; i++)
     {
         calculate_hash(strings[i], hash[i]);
-        printf("%s: %s\n", hash, strings[i]);
+        printf("%s: %s\n", hash[i], strings[i]);
     }
     printf("Done\nValidating they are all different\n");
     for (int i = 0; i < sz; i++)
