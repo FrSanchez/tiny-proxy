@@ -15,6 +15,22 @@ HashMap *newHashMap(int capacity)
     return this;
 }
 
+void freeHashMap(HashMap *this)
+{
+    for (int i = 0; i < this->cap; i++)
+    {
+        Pair *current = this->list[i];
+        while (current)
+        {
+            Pair *next = current->next;
+            free(current);
+            current = next;
+        }
+    }
+    free(this->list);
+    free(this);
+}
+
 unsigned hashcode(HashMap *this, char *key)
 {
     unsigned code;

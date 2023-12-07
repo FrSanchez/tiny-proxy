@@ -23,4 +23,5 @@ void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum,
                  char *shortmsg, char *longmsg);
 int parse_url(char *url, URL *urlInfo);
+
 #endif
